@@ -17,11 +17,11 @@ async def process_new_message(client, message):
 
     conn = get_db()
     
-    # 1. CHECK IF THIS CHAT IS A SOURCE (Bulletproof database extraction)
+    # 1. CHECK IF THIS CHAT IS A SOURCE
     matched_source_name = None
     sources = conn.execute("SELECT * FROM sources").fetchall()
     for s in sources:
-        s_tup = tuple(s) # Converts row to tuple to bypass column names
+        s_tup = tuple(s)
         s_id = str(s_tup[0])
         s_name = str(s_tup[1]) if len(s_tup) > 1 else str(s_tup[0])
         
@@ -35,10 +35,19 @@ async def process_new_message(client, message):
         conn.close()
         return
 
-    # 2. FIND WHICH TARGETS THIS SOURCE GOES TO
+    # 2. FIND WHICH TARGETS THIS SOURCE GOES TO (Bulletproof table check)
     target_names = []
-    routes = conn.execute("SELECT * FROM routing").fetchall()
-    for r in routes:
+    try:
+        # Try finding the table named 'routes'
+        routes_data = conn.execute("SELECT * FROM routes").fetchall()
+    except:
+        try:
+            # If that fails, try 'routing'
+            routes_data = conn.execute("SELECT * FROM routing").fetchall()
+        except:
+            routes_data = []
+
+    for r in routes_data:
         r_tup = tuple(r)
         route_src = str(r_tup[0])
         route_tgt = str(r_tup[1]) if len(r_tup) > 1 else ""
