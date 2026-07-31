@@ -1,140 +1,127 @@
 import os
-from telethon import events, Button
+import datetime
+from telethon import events
 from bot.database import get_db, is_paused, set_paused, add_source, add_target, add_route, add_filter
 
 ADMIN_USER_ID = int(os.environ.get("ADMIN_USER_ID", 0))
-user_states = {}
-
-def main_menu_btns():
-    return [
-        [Button.inline("📡 Sources", b"menu_src"), Button.inline("🎯 Targets", b"menu_tgt")],
-        [Button.inline("🔀 Routing", b"menu_rtg"), Button.inline("🚫 Filters", b"menu_flt")],
-        [Button.inline("📊 Stats", b"menu_sts"), Button.inline("📝 Activity", b"menu_act")],
-        [Button.inline("⏸ Pause / ▶️ Resume", b"toggle_pause"), Button.inline("🔧 Status", b"menu_stat")]
-    ]
 
 def register_admin_handlers(client):
     
-    @client.on(events.NewMessage(pattern='/admin'))
+    @client.on(events.NewMessage(pattern=r'^/admin'))
     async def admin_start(event):
         if event.sender_id != ADMIN_USER_ID:
-            await event.reply("❌ Access denied.")
             return
-        user_states.pop(event.sender_id, None)
         status = "🔴 PAUSED" if is_paused() else "🟢 ACTIVE"
-        await event.reply(f"⚙️ **ADMIN PANEL**\n\nStatus: {status}", buttons=main_menu_btns())
-
-    @client.on(events.CallbackQuery())
-    async def callback_handler(event):
-        if event.sender_id != ADMIN_USER_ID:
-            return
         
-        data = event.data.decode('utf-8')
-        user_states.pop(event.sender_id, None) # Clear states on button press
-        
-        if data == "main_menu":
-            status = "🔴 PAUSED" if is_paused() else "🟢 ACTIVE"
-            await event.edit(f"⚙️ **ADMIN PANEL**\n\nStatus: {status}", buttons=main_menu_btns())
-            
-        elif data == "toggle_pause":
-            set_paused(not is_paused())
-            status = "🔴 PAUSED" if is_paused() else "🟢 ACTIVE"
-            await event.answer(f"Status changed to {status}", alert=True)
-            await event.edit(f"⚙️ **ADMIN PANEL**\n\nStatus: {status}", buttons=main_menu_btns())
+        help_text = f"""⚙️ **ADMIN PANEL**
+Status: {status}
 
-        elif data == "menu_src":
-            btns = [[Button.inline("➕ Add Source", b"add_src")], [Button.inline("⬅️ Back", b"main_menu")]]
-            await event.edit("📡 **Source Channels**", buttons=btns)
-            
-        elif data == "add_src":
-            user_states[event.sender_id] = "WAIT_ADD_SRC"
-            await event.edit("Send the source channel username (e.g. @channel) or ID (e.g. -100...):", 
-                             buttons=[[Button.inline("Cancel", b"menu_src")]])
+**📡 Channels**
+`/addsource @username`
+`/addtarget @username`
 
-        elif data == "menu_tgt":
-            btns = [[Button.inline("➕ Add Target", b"add_tgt")], [Button.inline("⬅️ Back", b"main_menu")]]
-            await event.edit("🎯 **Target Channels**", buttons=btns)
+**🔀 Routing**
+`/addroute @source -> @target`
 
-        elif data == "add_tgt":
-            user_states[event.sender_id] = "WAIT_ADD_TGT"
-            await event.edit("Send the target channel username (e.g. @channel) or ID (e.g. -100...):", 
-                             buttons=[[Button.inline("Cancel", b"menu_tgt")]])
-                             
-        elif data == "menu_rtg":
-            user_states[event.sender_id] = "WAIT_ADD_RTG"
-            await event.edit("🔀 **Add Route**\nSend it exactly like this:\n`<source_id> -> <target_id>`\nExample: @source -> @target", 
-                             buttons=[[Button.inline("Cancel", b"main_menu")]])
+**🚫 Blacklists / Filters**
+`/addword casino`
+`/addlink example.com`
+`/adddomain badsite.com`
 
-        elif data == "menu_flt":
-            btns = [
-                [Button.inline("➕ Add Word", b"flt_word"), Button.inline("➕ Add Link", b"flt_link")],
-                [Button.inline("➕ Add Domain", b"flt_dom"), Button.inline("⬅️ Back", b"main_menu")]
-            ]
-            await event.edit("🚫 **Filters**", buttons=btns)
-            
-        elif data in ["flt_word", "flt_link", "flt_dom"]:
-            user_states[event.sender_id] = f"WAIT_{data.upper()}"
-            await event.edit("Send the item to blacklist:", buttons=[[Button.inline("Cancel", b"menu_flt")]])
+**⚙️ Controls**
+`/pause` (Stops all forwarding)
+`/resume` (Starts forwarding again)
+`/stats` (See today's numbers)
+`/status` (System info)
+"""
+        await event.reply(help_text)
 
-        elif data == "menu_sts":
-            conn = get_db()
-            today = datetime.datetime.now().strftime("%Y-%m-%d")
-            stats = conn.execute("SELECT * FROM statistics WHERE date=?", (today,)).fetchone()
-            conn.close()
-            
-            text = "📊 **Statistics (Today)**\n\n"
-            if stats:
-                text += f"📥 Processed: {stats['processed']}\n✅ Forwarded: {stats['forwarded']}\n🚫 Rejected: {stats['rejected']}\n❌ Errors: {stats['errors']}"
-            else:
-                text += "No activity today."
-                
-            await event.edit(text, buttons=[[Button.inline("⬅️ Back", b"main_menu")]])
+    @client.on(events.NewMessage(pattern=r'^/pause'))
+    async def pause_bot(event):
+        if event.sender_id != ADMIN_USER_ID: return
+        set_paused(True)
+        await event.reply("🔴 Forwarding is now PAUSED.")
 
-        elif data == "menu_stat":
-            conn = get_db()
-            src_count = conn.execute("SELECT COUNT(*) FROM sources").fetchone()[0]
-            tgt_count = conn.execute("SELECT COUNT(*) FROM targets").fetchone()[0]
-            conn.close()
-            
-            status = "🔴 PAUSED" if is_paused() else "🟢 ACTIVE"
-            text = f"🔧 **System Status**\n\nTelegram: 🟢 Connected\nDatabase: 🟢 Connected\nForwarding: {status}\n\nSources: {src_count}\nTargets: {tgt_count}"
-            await event.edit(text, buttons=[[Button.inline("⬅️ Back", b"main_menu")]])
+    @client.on(events.NewMessage(pattern=r'^/resume'))
+    async def resume_bot(event):
+        if event.sender_id != ADMIN_USER_ID: return
+        set_paused(False)
+        await event.reply("🟢 Forwarding is now ACTIVE.")
 
-    @client.on(events.NewMessage())
-    async def state_input_handler(event):
-        if event.sender_id != ADMIN_USER_ID or event.sender_id not in user_states:
-            return
-            
-        state = user_states[event.sender_id]
-        text = event.text.strip()
-        
+    @client.on(events.NewMessage(pattern=r'^/addsource\s+(.+)'))
+    async def cmd_add_source(event):
+        if event.sender_id != ADMIN_USER_ID: return
+        target = event.pattern_match.group(1).strip()
         try:
-            if state == "WAIT_ADD_SRC":
-                # Ensure bot has access
-                entity = await client.get_entity(text)
-                add_source(entity.id, text)
-                await event.reply(f"✅ Source {text} added.", buttons=[[Button.inline("⬅️ Back", b"menu_src")]])
-                
-            elif state == "WAIT_ADD_TGT":
-                entity = await client.get_entity(text)
-                add_target(entity.id, text)
-                await event.reply(f"✅ Target {text} added.", buttons=[[Button.inline("⬅️ Back", b"menu_tgt")]])
-                
-            elif state == "WAIT_ADD_RTG":
-                if "->" not in text:
-                    raise ValueError("Format must be: source -> target")
-                src, tgt = [x.strip() for x in text.split("->")]
-                add_route(src, tgt)
-                await event.reply(f"✅ Route {src} -> {tgt} added.", buttons=[[Button.inline("⬅️ Back", b"main_menu")]])
-                
-            elif state.startswith("WAIT_FLT_"):
-                f_type = state.split("_")[2].lower() # word, link, dom
-                if f_type == 'dom': f_type = 'domain'
-                add_filter(f_type, text)
-                await event.reply(f"✅ {f_type.capitalize()} filter '{text}' added.", buttons=[[Button.inline("⬅️ Back", b"menu_flt")]])
-
+            entity = await client.get_entity(target)
+            add_source(entity.id, target)
+            await event.reply(f"✅ Source {target} added successfully.")
         except Exception as e:
-            await event.reply(f"❌ Error: {str(e)}\n\nMake sure the format is correct and the bot is an admin in the channel.", buttons=[[Button.inline("⬅️ Back to Main", b"main_menu")]])
-            
-        finally:
-            del user_states[event.sender_id]
+            await event.reply(f"❌ Error: {str(e)}\nMake sure your account is a member of that channel.")
+
+    @client.on(events.NewMessage(pattern=r'^/addtarget\s+(.+)'))
+    async def cmd_add_target(event):
+        if event.sender_id != ADMIN_USER_ID: return
+        target = event.pattern_match.group(1).strip()
+        try:
+            entity = await client.get_entity(target)
+            add_target(entity.id, target)
+            await event.reply(f"✅ Target {target} added successfully.")
+        except Exception as e:
+            await event.reply(f"❌ Error: {str(e)}\nMake sure you have admin rights to post there.")
+
+    @client.on(events.NewMessage(pattern=r'^/addroute\s+(.+)'))
+    async def cmd_add_route(event):
+        if event.sender_id != ADMIN_USER_ID: return
+        text = event.pattern_match.group(1).strip()
+        if "->" not in text:
+            await event.reply("❌ Wrong format. Use: `/addroute @source -> @target`")
+            return
+        src, tgt = [x.strip() for x in text.split("->")]
+        add_route(src, tgt)
+        await event.reply(f"✅ Route created: {src} -> {tgt}")
+
+    @client.on(events.NewMessage(pattern=r'^/addword\s+(.+)'))
+    async def cmd_add_word(event):
+        if event.sender_id != ADMIN_USER_ID: return
+        word = event.pattern_match.group(1).strip()
+        add_filter('word', word)
+        await event.reply(f"✅ Blacklisted word added: {word}")
+
+    @client.on(events.NewMessage(pattern=r'^/addlink\s+(.+)'))
+    async def cmd_add_link(event):
+        if event.sender_id != ADMIN_USER_ID: return
+        link = event.pattern_match.group(1).strip()
+        add_filter('link', link)
+        await event.reply(f"✅ Blocked link added: {link}")
+
+    @client.on(events.NewMessage(pattern=r'^/adddomain\s+(.+)'))
+    async def cmd_add_domain(event):
+        if event.sender_id != ADMIN_USER_ID: return
+        dom = event.pattern_match.group(1).strip()
+        add_filter('domain', dom)
+        await event.reply(f"✅ Blocked domain added: {dom}")
+
+    @client.on(events.NewMessage(pattern=r'^/stats'))
+    async def cmd_stats(event):
+        if event.sender_id != ADMIN_USER_ID: return
+        conn = get_db()
+        today = datetime.datetime.now().strftime("%Y-%m-%d")
+        stats = conn.execute("SELECT * FROM statistics WHERE date=?", (today,)).fetchone()
+        conn.close()
+        
+        if stats:
+            text = f"📊 **Stats for Today**\n\n📥 Processed: {stats['processed']}\n✅ Forwarded: {stats['forwarded']}\n🚫 Rejected: {stats['rejected']}\n❌ Errors: {stats['errors']}"
+        else:
+            text = "📊 No messages processed yet today."
+        await event.reply(text)
+
+    @client.on(events.NewMessage(pattern=r'^/status'))
+    async def cmd_status(event):
+        if event.sender_id != ADMIN_USER_ID: return
+        conn = get_db()
+        src_c = conn.execute("SELECT COUNT(*) FROM sources").fetchone()[0]
+        tgt_c = conn.execute("SELECT COUNT(*) FROM targets").fetchone()[0]
+        conn.close()
+        st = "🟢 ACTIVE" if not is_paused() else "🔴 PAUSED"
+        await event.reply(f"🔧 **System Status**\n\nForwarding is {st}\n📡 Sources: {src_c}\n🎯 Targets: {tgt_c}")
