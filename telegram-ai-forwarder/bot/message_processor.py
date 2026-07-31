@@ -1,87 +1,82 @@
-import re
-from urllib.parse import urlparse
-from bot.database import get_db, is_paused, log_activity
-from bot.publisher import forward_message
+import datetime
+from telethon import events
+from bot.database import get_db, is_paused
+
+# ==========================================
+# 🤖 PUT YOUR LINK-SWAP BOT USERNAME HERE:
+# ==========================================
+LINK_BOT_USERNAME = "@Lootkamallbot"
+# ==========================================
 
 async def process_new_message(client, message):
-    source_chat_id = str(message.chat_id)
-    text = message.text or message.caption or ""
-    
-    # 1. Check if paused
     if is_paused():
         return
+
+    # Check if this chat is one of our sources
+    chat = await message.get_chat()
+    if not chat: 
+        return
         
+    chat_id = getattr(chat, 'id', None)
+    chat_username = getattr(chat, 'username', None)
+
     conn = get_db()
     
-    # 2. Check source is enabled
-    source = conn.execute("SELECT * FROM sources WHERE channel_id=? AND enabled=1", (source_chat_id,)).fetchone()
+    # Find matching source in Database
+    source = None
+    sources = conn.execute("SELECT * FROM sources").fetchall()
+    for s in sources:
+        stored_val = str(s['source_id']).replace('@', '')
+        if str(chat_id) == stored_val or str(chat_id) == f"-100{stored_val}" or (chat_username and stored_val.lower() == chat_username.lower()):
+            source = s
+            break
+            
     if not source:
         conn.close()
         return
 
-    source_name = source['username'] or source_chat_id
-
-    # Fetch Filters
-    filters = conn.execute("SELECT * FROM filters").fetchall()
-    blacklist_words = [f['value'].lower() for f in filters if f['filter_type'] == 'word']
-    blocked_links = [f['value'].lower() for f in filters if f['filter_type'] == 'link']
-    blocked_domains = [f['value'].lower() for f in filters if f['filter_type'] == 'domain']
-    required_words = [f['value'].lower() for f in filters if f['filter_type'] == 'required']
-
-    # 3. Check Blacklist Words (Case Insensitive)
-    text_lower = text.lower()
-    for word in blacklist_words:
-        if re.search(rf'\b{re.escape(word)}\b', text_lower):
-            log_activity('rejected', source_name, reason=f'Blacklisted word: {word}')
-            conn.close()
-            return
-
-    # 4 & 5. Check Blocked URLs and Domains
-    urls = re.findall(r'(https?://[^\s]+)', text_lower)
-    for url in urls:
-        if url in blocked_links:
-            log_activity('rejected', source_name, reason=f'Blocked link: {url}')
-            conn.close()
-            return
-        domain = urlparse(url).netloc
-        if domain in blocked_domains:
-            log_activity('rejected', source_name, reason=f'Blocked domain: {domain}')
-            conn.close()
-            return
-
-    # 6. Check Required Words
-    if required_words:
-        if not any(re.search(rf'\b{re.escape(word)}\b', text_lower) for word in required_words):
-            log_activity('rejected', source_name, reason='Missing required word')
-            conn.close()
-            return
-
-    # 7. Find Target Channels (Routing)
-    routes = conn.execute('''
-        SELECT t.channel_id, t.username FROM routes r
-        JOIN targets t ON r.target_id = t.channel_id
-        WHERE r.source_id = ? AND r.enabled = 1 AND t.enabled = 1
-    ''', (source_chat_id,)).fetchall()
-
+    # Get all Target Channels for this Source
+    routes = conn.execute("SELECT target_id FROM routing WHERE source_id=?", (source['source_id'],)).fetchall()
+    
     if not routes:
         conn.close()
         return
 
-    # 8. Duplicate Check & Forwarding (9 & 10)
-    for target in routes:
-        target_id = target['channel_id']
-        target_name = target['username'] or target_id
-        
-        is_dup = conn.execute("SELECT 1 FROM processed_messages WHERE source_msg_id=? AND target_channel=?", (message.id, target_id)).fetchone()
-        
-        if not is_dup:
+    try:
+        # 1. Talk to your link-swapping bot!
+        # timeout=15 means it will wait up to 15 seconds for your bot to reply
+        async with client.conversation(LINK_BOT_USERNAME, timeout=15) as conv:
+            
+            # Send the original message to your converter bot
+            if message.media:
+                await conv.send_file(message.media, caption=message.text)
+            else:
+                await conv.send_message(message.text)
+
+            # Wait for your bot to reply with the converted message
+            converted_response = await conv.get_response()
+
+        # 2. Send the newly converted response to your target channels
+        for route in routes:
+            target_id = route['target_id']
             try:
-                await forward_message(client, message, target_id)
-                conn.execute("INSERT INTO processed_messages (source_msg_id, source_channel, target_channel, timestamp) VALUES (?, ?, ?, CURRENT_TIMESTAMP)", 
-                             (message.id, source_chat_id, target_id))
-                log_activity('forwarded', source_name, target_name)
-            except Exception as e:
-                log_activity('error', source_name, target_name, reason=str(e))
+                # Send it to the target!
+                if converted_response.media:
+                    await client.send_file(target_id, converted_response.media, caption=converted_response.text)
+                else:
+                    await client.send_message(target_id, converted_response.text)
+                    
+                # Log success for your /stats command
+                today = datetime.datetime.now().strftime("%Y-%m-%d")
+                conn.execute("INSERT OR IGNORE INTO statistics (date, processed, forwarded, rejected, errors) VALUES (?, 0, 0, 0, 0)", (today,))
+                conn.execute("UPDATE statistics SET processed = processed + 1, forwarded = forwarded + 1 WHERE date=?", (today,))
+                conn.commit()
                 
-    conn.commit()
-    conn.close()
+            except Exception as e:
+                print(f"Failed to send to {target_id}: {e}")
+                
+    except Exception as e:
+        print(f"Failed to communicate with Link Bot: {e}")
+        
+    finally:
+        conn.close()
