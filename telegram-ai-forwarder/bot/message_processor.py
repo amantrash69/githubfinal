@@ -100,9 +100,17 @@ async def process_new_message(client, message):
 
         # Extract text/caption safely
         original_text = message.text or message.caption or getattr(message, 'message', '') or ""
+        original_text_lower = original_text.lower()
 
         # ==========================================
-        # 3. CHECK BLACKLIST (ORIGINAL MESSAGE)
+        # 3. AMAZON-ONLY FILTER (WHITELIST)
+        # ==========================================
+        if "amazon." not in original_text_lower and "amzn." not in original_text_lower:
+            print("⏭️ SKIPPED: Message does not contain an Amazon link (e.g. Myntra/Flipkart).")
+            return
+
+        # ==========================================
+        # 4. CHECK DB BLACKLIST (ORIGINAL MESSAGE)
         # ==========================================
         is_blocked, blocked_word = check_blacklist(original_text, conn)
         if is_blocked:
@@ -114,7 +122,7 @@ async def process_new_message(client, message):
             return
 
         # ==========================================
-        # 4. SEND TO CONVERTER BOT
+        # 5. SEND TO CONVERTER BOT
         # ==========================================
         print(f"🚀 Sending to {LINK_BOT_USERNAME}...")
         try:
@@ -129,10 +137,21 @@ async def process_new_message(client, message):
                 print("✅ Got reply from bot!")
 
             converted_text = converted_response.text or converted_response.caption or getattr(converted_response, 'message', '') or ""
+            converted_text_lower = converted_text.lower()
 
             # ==========================================
-            # 5. CHECK BLACKLIST (CONVERTED MESSAGE)
+            # 6. HARDCODED ERROR & DB BLACKLIST (CONVERTED)
             # ==========================================
+            # 6A. Catch Lootkamallbot's specific failure message
+            if "could not detect valid product details or links" in converted_text_lower:
+                print("🚫 MESSAGE BLOCKED: Lootkamallbot failed to detect product details.")
+                today = datetime.datetime.now().strftime("%Y-%m-%d")
+                conn.execute("INSERT OR IGNORE INTO statistics (date, processed, forwarded, rejected, errors) VALUES (?, 0, 0, 0, 0)", (today,))
+                conn.execute("UPDATE statistics SET processed = processed + 1, rejected = rejected + 1 WHERE date=?", (today,))
+                conn.commit()
+                return
+
+            # 6B. Normal DB Blacklist Check
             is_blocked, blocked_word = check_blacklist(converted_text, conn)
             if is_blocked:
                 print(f"🚫 MESSAGE BLOCKED (Post-conversion): Contains '{blocked_word}'")
@@ -143,7 +162,7 @@ async def process_new_message(client, message):
                 return
 
             # ==========================================
-            # 6. FORWARD TO TARGET(S)
+            # 7. FORWARD TO TARGET(S)
             # ==========================================
             for t_name in target_names:
                 try:
