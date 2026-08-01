@@ -58,15 +58,12 @@ def format_single_deal(raw_block, final_link):
     currency_regex = r'(?:₹|rs\.?|@)[\s]*([0-9,]+)'
     matches = re.findall(currency_regex, raw_block, re.IGNORECASE)
     
-    # THE FIX: Fallback Scanner for lazy formatting (e.g. "https://amzn.to/... 202" or "202 https://amzn.to/...")
+    # Fallback Scanner for lazy formatting
     if not matches:
-        # Fallback 1: Number immediately AFTER the link
         matches += re.findall(r'https?://[^\s]+\s+([0-9,]{2,})', raw_block, re.IGNORECASE)
         if not matches:
-            # Fallback 2: Number immediately BEFORE the link
             matches += re.findall(r'\b([0-9,]{2,})\s+https?://', raw_block, re.IGNORECASE)
         if not matches:
-            # Fallback 3: Floating number at the very end of the message
             matches += re.findall(r'\b([0-9,]{2,})\s*$', raw_block)
             
     amounts = []
@@ -109,7 +106,6 @@ def format_single_deal(raw_block, final_link):
         clean_title = re.sub(r'\b(?:for|at|only|now)\b\s*(?:₹|rs\.?|@)?\s*[0-9,.]+', '', raw_title, flags=re.IGNORECASE)
         clean_title = re.sub(r'(?:₹|rs\.?|@)\s*[0-9,.]+', '', clean_title, flags=re.IGNORECASE)
         
-        # If we used the Fallback Scanner, remove that stray number from the title so it looks clean!
         if deal_price > 0:
             deal_str = str(int(deal_price))
             clean_title = re.sub(rf'\b{deal_str}\b\s*$', '', clean_title).strip()
@@ -180,7 +176,8 @@ async def process_new_message(client, message):
 
         print("🚀 Processing native link conversion...")
         
-        url_pattern = r'https?://(?:amzn\.[a-z\.]+|amazon\.[a-z\.]+|amzn-to\.co|amz\.in|a\.co|link\.amazon)/[^\s]+'
+        # THE FIX: Added (?:www\.)? so it catches www.amazon.in seamlessly!
+        url_pattern = r'https?://(?:www\.)?(?:amzn\.[a-z\.]+|amazon\.[a-z\.]+|amzn-to\.co|amz\.in|a\.co|link\.amazon)/[^\s]+'
         
         lines = original_text.split('\n')
         current_block = ""
