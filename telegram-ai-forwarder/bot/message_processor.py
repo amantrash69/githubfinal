@@ -103,9 +103,9 @@ async def process_new_message(client, message):
         original_text_lower = original_text.lower()
 
         # ==========================================
-        # 3. AMAZON-ONLY FILTER (WHITELIST)
+        # 3. AMAZON-ONLY FILTER (UPDATED WHITELIST)
         # ==========================================
-        if "amazon." not in original_text_lower and "amzn." not in original_text_lower:
+        if "amazon" not in original_text_lower and "amzn" not in original_text_lower:
             print("⏭️ SKIPPED: Message does not contain an Amazon link (e.g. Myntra/Flipkart).")
             return
 
