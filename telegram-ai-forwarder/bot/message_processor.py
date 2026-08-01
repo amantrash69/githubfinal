@@ -28,7 +28,6 @@ def check_blacklist(text, conn):
 def fetch_real_url(url):
     """Uses API unshortener first to bypass Amazon bot blocks, then follows native redirects."""
     try:
-        # Step 1: Try unshorten.me API for bulletproof amzn.to decoding
         api_url = f"https://unshorten.me/s/{url}"
         req = urllib.request.Request(api_url, headers={'User-Agent': 'Mozilla/5.0'})
         with urllib.request.urlopen(req, timeout=10) as response:
@@ -39,7 +38,6 @@ def fetch_real_url(url):
         pass
         
     try:
-        # Step 2: Native fallback just in case there's a second redirect hop
         req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/114.0.0.0 Safari/537.36'})
         with urllib.request.urlopen(req, timeout=10) as response:
             return response.geturl()
@@ -56,9 +54,21 @@ def format_single_deal(raw_block, final_link):
     mrp = 0
     deal_price = 0
     
-    # 1. Extract prices
+    # 1. Extract prices (First pass: standard currency symbols)
     currency_regex = r'(?:₹|rs\.?|@)[\s]*([0-9,]+)'
     matches = re.findall(currency_regex, raw_block, re.IGNORECASE)
+    
+    # THE FIX: Fallback Scanner for lazy formatting (e.g. "https://amzn.to/... 202" or "202 https://amzn.to/...")
+    if not matches:
+        # Fallback 1: Number immediately AFTER the link
+        matches += re.findall(r'https?://[^\s]+\s+([0-9,]{2,})', raw_block, re.IGNORECASE)
+        if not matches:
+            # Fallback 2: Number immediately BEFORE the link
+            matches += re.findall(r'\b([0-9,]{2,})\s+https?://', raw_block, re.IGNORECASE)
+        if not matches:
+            # Fallback 3: Floating number at the very end of the message
+            matches += re.findall(r'\b([0-9,]{2,})\s*$', raw_block)
+            
     amounts = []
     for m in matches:
         try:
@@ -98,6 +108,13 @@ def format_single_deal(raw_block, final_link):
         raw_title = title_candidates[0]
         clean_title = re.sub(r'\b(?:for|at|only|now)\b\s*(?:₹|rs\.?|@)?\s*[0-9,.]+', '', raw_title, flags=re.IGNORECASE)
         clean_title = re.sub(r'(?:₹|rs\.?|@)\s*[0-9,.]+', '', clean_title, flags=re.IGNORECASE)
+        
+        # If we used the Fallback Scanner, remove that stray number from the title so it looks clean!
+        if deal_price > 0:
+            deal_str = str(int(deal_price))
+            clean_title = re.sub(rf'\b{deal_str}\b\s*$', '', clean_title).strip()
+            clean_title = re.sub(rf'^\s*\b{deal_str}\b', '', clean_title).strip()
+            
         clean_title = re.sub(r'^[.\s\-\:,]+|[.\s\-\:,]+$', '', clean_title) 
         clean_title = re.sub(r'#[^\s]+', '', clean_title, flags=re.IGNORECASE).strip()
         
@@ -175,11 +192,9 @@ async def process_new_message(client, message):
             urls_in_line = re.findall(url_pattern, line, re.IGNORECASE)
             
             if urls_in_line:
-                # Clean any punctuation clinging to the end of the URL
                 primary_short_url = urls_in_line[0].rstrip('.,;:"\'()')
                 real_url = await resolve_amazon_url(primary_short_url)
                 
-                # Check for standard ASIN product page
                 asin_match = re.search(r'(?:/dp/|/gp/product/|/ASIN/|/d/|%2Fdp%2F|%2Fgp%2Fproduct%2F)([A-Z0-9]{10})', real_url, re.IGNORECASE)
                 
                 if asin_match:
@@ -188,18 +203,12 @@ async def process_new_message(client, message):
                     domain = domain_match.group(0).lower() if domain_match else "amazon.in"
                     final_link = f"https://www.{domain}/dp/{asin}?tag={AFFILIATE_TAG}"
                 else:
-                    # THE FIX: If it is a Store, Category, or Deal Page (No ASIN)
                     if re.search(r'amazon\.', real_url, re.IGNORECASE):
-                        # Safely split off the hash fragment if one exists
                         parts = real_url.split('#', 1)
                         base_url = parts[0]
                         hash_part = f"#{parts[1]}" if len(parts) > 1 else ""
-                        
-                        # Scrub existing affiliate tags
                         clean_url = re.sub(r'([?&])tag=[^&]+', r'\1', base_url)
                         clean_url = clean_url.replace('&&', '&').replace('?&', '?').rstrip('?&')
-                        
-                        # Apply your custom tag
                         if '?' in clean_url:
                             final_link = f"{clean_url}&tag={AFFILIATE_TAG}{hash_part}"
                         else:
