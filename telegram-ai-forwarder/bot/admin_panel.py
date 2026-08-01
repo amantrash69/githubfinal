@@ -8,7 +8,7 @@ from bot.database import get_db, is_paused, set_paused, add_source, add_target, 
 # 👑 BULLETPROOF ADMIN ID PARSER
 # ==========================================
 raw_admin_ids = str(os.environ.get("ADMIN_USER_ID", "0"))
-# This extracts ONLY the numbers, completely ignoring accidental quotes, spaces, or brackets!
+# Extracts ONLY the numbers, completely ignoring accidental quotes, spaces, or brackets!
 ADMIN_USER_IDS = [int(x) for x in re.findall(r'\d+', raw_admin_ids)]
 
 print(f"\n👑 ADMIN SYSTEM ACTIVE | Authorized IDs: {ADMIN_USER_IDS}\n")
@@ -20,19 +20,18 @@ def is_admin(sender_id):
 
 def register_admin_handlers(client):
     
-    # 🛠️ TRACKER: Logs every command attempt in Render
-    @client.on(events.NewMessage(pattern=r'^/(?i)(admin|status|stats|addsource|addtarget|addroute|addword|addlink|adddomain|pause|resume)', incoming=True, outgoing=True))
+    # 🛠️ TRACKER: Logs every command attempt (Python 3.12 Safe Regex)
+    @client.on(events.NewMessage(pattern=r'(?i)^/(admin|status|stats|addsource|addtarget|addroute|addword|addlink|adddomain|pause|resume)', incoming=True, outgoing=True))
     async def command_tracker(event):
         sender = event.sender_id
         print(f"\n--- 🛠️ COMMAND DETECTED: {event.raw_text} ---")
         print(f"👤 Sender ID: {sender}")
         if not is_admin(sender):
-            print(f"❌ ACCESS DENIED: {sender} is not in the Admin List: {ADMIN_USER_IDS}")
+            print(f"❌ ACCESS DENIED: {sender} is not in the Admin List.")
         else:
             print(f"✅ ACCESS GRANTED: Executing command...")
 
-    # ADDED: incoming=True, outgoing=True ensures commands work in Saved Messages & DMs
-    @client.on(events.NewMessage(pattern=r'^/admin', incoming=True, outgoing=True))
+    @client.on(events.NewMessage(pattern=r'(?i)^/admin', incoming=True, outgoing=True))
     async def admin_start(event):
         if not is_admin(event.sender_id): return
         status = "🔴 PAUSED" if is_paused() else "🟢 ACTIVE"
@@ -60,19 +59,19 @@ Status: {status}
 """
         await event.reply(help_text)
 
-    @client.on(events.NewMessage(pattern=r'^/pause', incoming=True, outgoing=True))
+    @client.on(events.NewMessage(pattern=r'(?i)^/pause', incoming=True, outgoing=True))
     async def pause_bot(event):
         if not is_admin(event.sender_id): return
         set_paused(True)
         await event.reply("🔴 Forwarding is now PAUSED.")
 
-    @client.on(events.NewMessage(pattern=r'^/resume', incoming=True, outgoing=True))
+    @client.on(events.NewMessage(pattern=r'(?i)^/resume', incoming=True, outgoing=True))
     async def resume_bot(event):
         if not is_admin(event.sender_id): return
         set_paused(False)
         await event.reply("🟢 Forwarding is now ACTIVE.")
 
-    @client.on(events.NewMessage(pattern=r'^/addsource\s+(.+)', incoming=True, outgoing=True))
+    @client.on(events.NewMessage(pattern=r'(?i)^/addsource\s+(.+)', incoming=True, outgoing=True))
     async def cmd_add_source(event):
         if not is_admin(event.sender_id): return
         target = event.pattern_match.group(1).strip()
@@ -83,7 +82,7 @@ Status: {status}
         except Exception as e:
             await event.reply(f"❌ Error: {str(e)}\nMake sure your account is a member of that channel.")
 
-    @client.on(events.NewMessage(pattern=r'^/addtarget\s+(.+)', incoming=True, outgoing=True))
+    @client.on(events.NewMessage(pattern=r'(?i)^/addtarget\s+(.+)', incoming=True, outgoing=True))
     async def cmd_add_target(event):
         if not is_admin(event.sender_id): return
         target = event.pattern_match.group(1).strip()
@@ -94,7 +93,7 @@ Status: {status}
         except Exception as e:
             await event.reply(f"❌ Error: {str(e)}\nMake sure you have rights to post there.")
 
-    @client.on(events.NewMessage(pattern=r'^/addroute\s+(.+)', incoming=True, outgoing=True))
+    @client.on(events.NewMessage(pattern=r'(?i)^/addroute\s+(.+)', incoming=True, outgoing=True))
     async def cmd_add_route(event):
         if not is_admin(event.sender_id): return
         text = event.pattern_match.group(1).strip()
@@ -105,28 +104,28 @@ Status: {status}
         add_route(src, tgt)
         await event.reply(f"✅ Route created: {src} -> {tgt}")
 
-    @client.on(events.NewMessage(pattern=r'^/addword\s+(.+)', incoming=True, outgoing=True))
+    @client.on(events.NewMessage(pattern=r'(?i)^/addword\s+(.+)', incoming=True, outgoing=True))
     async def cmd_add_word(event):
         if not is_admin(event.sender_id): return
         word = event.pattern_match.group(1).strip()
         add_filter('word', word)
         await event.reply(f"✅ Blacklisted word added: {word}")
 
-    @client.on(events.NewMessage(pattern=r'^/addlink\s+(.+)', incoming=True, outgoing=True))
+    @client.on(events.NewMessage(pattern=r'(?i)^/addlink\s+(.+)', incoming=True, outgoing=True))
     async def cmd_add_link(event):
         if not is_admin(event.sender_id): return
         link = event.pattern_match.group(1).strip()
         add_filter('link', link)
         await event.reply(f"✅ Blocked link added: {link}")
 
-    @client.on(events.NewMessage(pattern=r'^/adddomain\s+(.+)', incoming=True, outgoing=True))
+    @client.on(events.NewMessage(pattern=r'(?i)^/adddomain\s+(.+)', incoming=True, outgoing=True))
     async def cmd_add_domain(event):
         if not is_admin(event.sender_id): return
         dom = event.pattern_match.group(1).strip()
         add_filter('domain', dom)
         await event.reply(f"✅ Blocked domain added: {dom}")
 
-    @client.on(events.NewMessage(pattern=r'^/stats', incoming=True, outgoing=True))
+    @client.on(events.NewMessage(pattern=r'(?i)^/stats', incoming=True, outgoing=True))
     async def cmd_stats(event):
         if not is_admin(event.sender_id): return
         conn = get_db()
@@ -140,7 +139,7 @@ Status: {status}
             text = "📊 No messages processed yet today."
         await event.reply(text)
 
-    @client.on(events.NewMessage(pattern=r'^/status', incoming=True, outgoing=True))
+    @client.on(events.NewMessage(pattern=r'(?i)^/status', incoming=True, outgoing=True))
     async def cmd_status(event):
         if not is_admin(event.sender_id): return
         conn = get_db()
