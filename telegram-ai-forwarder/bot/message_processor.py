@@ -26,13 +26,24 @@ def check_blacklist(text, conn):
     return False, None
 
 def fetch_real_url(url):
-    """Natively follows redirects to bypass double-shorteners without API limits"""
+    """Uses API unshortener first to bypass Amazon bot blocks, then follows native redirects."""
     try:
-        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'})
-        with urllib.request.urlopen(req, timeout=15) as response:
+        # Step 1: Try unshorten.me API for bulletproof amzn.to decoding
+        api_url = f"https://unshorten.me/s/{url}"
+        req = urllib.request.Request(api_url, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req, timeout=10) as response:
+            resolved = response.read().decode('utf-8').strip()
+            if resolved.startswith('http') and resolved != url:
+                url = resolved
+    except:
+        pass
+        
+    try:
+        # Step 2: Native fallback just in case there's a second redirect hop
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/114.0.0.0 Safari/537.36'})
+        with urllib.request.urlopen(req, timeout=10) as response:
             return response.geturl()
-    except Exception as e:
-        print(f"⚠️ URL Resolve Error: {e}")
+    except:
         return url
 
 async def resolve_amazon_url(url):
@@ -45,7 +56,7 @@ def format_single_deal(raw_block, final_link):
     mrp = 0
     deal_price = 0
     
-    # Extract prices
+    # 1. Extract prices
     currency_regex = r'(?:₹|rs\.?|@)[\s]*([0-9,]+)'
     matches = re.findall(currency_regex, raw_block, re.IGNORECASE)
     amounts = []
@@ -61,43 +72,42 @@ def format_single_deal(raw_block, final_link):
         deal_price = amounts[-1]
     elif len(amounts) == 1:
         deal_price = amounts[0]
-        
-    # Extract Coupon
-    coupon_text = ""
-    coupon_regex = r'(?:apply|extra|get|use)\s*(?:₹|rs\.?)?\s*\d+\s*(?:%|rs\.?)?\s*(?:off|discount)|(?:apply|extra|get|use)?\s*(?:₹|rs\.?)?\s*\d+\s*(?:%|rs\.?)?\s*coupon|bank\s+offers?'
-    coupon_match = re.search(coupon_regex, raw_block, re.IGNORECASE)
-    if coupon_match:
-        coupon_text = coupon_match.group(0).strip().title()
 
-    if deal_price > 0 and final_link:
-        clean_text = re.sub(r'https?://[^\s]+', '', raw_block, flags=re.IGNORECASE)
-        if coupon_match:
-            clean_text = clean_text.replace(coupon_match.group(0), '')
+    # 2. Extract Offers line by line
+    offers_text = ""
+    product_name = "🛍 Deal of the Day"
+    
+    text_without_link = re.sub(r'https?://[^\s]+', '', raw_block)
+    raw_lines = [line.strip() for line in text_without_link.split('\n') if line.strip()]
+    
+    title_candidates = []
+    
+    for index, line in enumerate(raw_lines):
+        line_lower = line.lower()
+        if index == 0:
+            title_candidates.append(line)
+            continue
             
-        clean_text = re.sub(r'\b\d+\s*%\s*off\b[\s:\-]*', '', clean_text, flags=re.IGNORECASE)
-        clean_text = re.sub(r'(?:for|at)\s*(?:₹|rs\.?|@)\s*[0-9,.]+', '', clean_text, flags=re.IGNORECASE)
-        clean_text = re.sub(r'(?:₹|rs\.?|@)\s*[0-9,.]+', '', clean_text, flags=re.IGNORECASE)
-        clean_text = re.sub(r'\b(for|at|only|now)\b', '', clean_text, flags=re.IGNORECASE)
-        clean_text = re.sub(r'#[^\s]+', '', clean_text, flags=re.IGNORECASE)
-        clean_text = re.sub(r'^[.\s\-\:]+|[.\s\-\:]+$', '', clean_text)
+        if re.search(r'(coupon|credit card|debit card|bank|axis|hdfc|sbi|icici|apply\s+.*?off|extra\s+.*?off)', line_lower):
+            offers_text += f"🎁 **Offer:** {line}\n"
+        else:
+            title_candidates.append(line)
+            
+    # 3. Clean up the product title
+    if title_candidates:
+        raw_title = title_candidates[0]
+        clean_title = re.sub(r'\b(?:for|at|only|now)\b\s*(?:₹|rs\.?|@)?\s*[0-9,.]+', '', raw_title, flags=re.IGNORECASE)
+        clean_title = re.sub(r'(?:₹|rs\.?|@)\s*[0-9,.]+', '', clean_title, flags=re.IGNORECASE)
+        clean_title = re.sub(r'^[.\s\-\:,]+|[.\s\-\:,]+$', '', clean_title) 
+        clean_title = re.sub(r'#[^\s]+', '', clean_title, flags=re.IGNORECASE).strip()
         
-        lines = [line.strip() for line in clean_text.split('\n') if line.strip()]
-        product_name = "Unknown Product"
-        
-        for line in lines:
-            trimmed = re.sub(r'[.:\-,]+$', '', line).strip()
-            if len(trimmed) > 3:
-                with_match = re.search(r'^(.*?)\s+with\s+', trimmed, re.IGNORECASE)
-                if with_match and len(with_match.group(1)) > 15:
-                    product_name = with_match.group(1)
-                elif len(trimmed) > 60:
-                    product_name = trimmed[:60].strip() + "..."
-                else:
-                    product_name = trimmed
-                break
+        if len(clean_title) > 3:
+            product_name = clean_title
 
-        response = f"🛍 **Product**\n{product_name}\n\n"
-        
+    # 4. Build final response
+    response = f"🛍 **Product**\n{product_name}\n\n"
+    
+    if deal_price > 0:
         if mrp > deal_price:
             savings = mrp - deal_price
             discount = round(((mrp - deal_price) / mrp) * 100)
@@ -107,17 +117,12 @@ def format_single_deal(raw_block, final_link):
             response += f"🏷 **Discount:** {discount}% OFF\n\n"
         else:
             response += f"💰 **Deal Price: ₹{format_money(deal_price)}**\n\n"
-            
-        if coupon_text:
-            response += f"🎟 **Coupon**\n{coupon_text}\n\n"
-            
-        response += f"🛒 **Buy Now 👇**\n{final_link}"
-        return response
+    
+    if offers_text:
+        response += f"{offers_text}\n"
         
-    elif final_link:
-        return f"🛒 **Buy Now 👇**\n{final_link}"
-        
-    return ""
+    response += f"🛒 **Buy Now 👇**\n{final_link}"
+    return response
 
 
 async def process_new_message(client, message):
@@ -132,9 +137,6 @@ async def process_new_message(client, message):
     conn = get_db()
     
     try:
-        # ==========================================
-        # 1. VERIFY SOURCE & FIND ROUTE
-        # ==========================================
         matched_source_name = None
         for s in conn.execute("SELECT * FROM sources").fetchall():
             s_tup = tuple(s)
@@ -152,9 +154,6 @@ async def process_new_message(client, message):
         original_text = message.text or message.caption or getattr(message, 'message', '') or ""
         original_text_lower = original_text.lower()
 
-        # ==========================================
-        # 2. AMAZON WHITELIST & PRE-BLACKLIST
-        # ==========================================
         if "amazon" not in original_text_lower and "amzn" not in original_text_lower: return
         
         is_blocked, blocked_word = check_blacklist(original_text, conn)
@@ -162,9 +161,6 @@ async def process_new_message(client, message):
             print(f"🚫 MESSAGE BLOCKED: Contains '{blocked_word}'")
             return
 
-        # ==========================================
-        # 3. THE NATIVE LINK SWAPPER (Option B)
-        # ==========================================
         print("🚀 Processing native link conversion...")
         
         url_pattern = r'https?://(?:amzn\.[a-z\.]+|amazon\.[a-z\.]+|amzn-to\.co|amz\.in|a\.co|link\.amazon)/[^\s]+'
@@ -179,17 +175,37 @@ async def process_new_message(client, message):
             urls_in_line = re.findall(url_pattern, line, re.IGNORECASE)
             
             if urls_in_line:
-                primary_short_url = urls_in_line[0]
+                # Clean any punctuation clinging to the end of the URL
+                primary_short_url = urls_in_line[0].rstrip('.,;:"\'()')
                 real_url = await resolve_amazon_url(primary_short_url)
                 
+                # Check for standard ASIN product page
                 asin_match = re.search(r'(?:/dp/|/gp/product/|/ASIN/|/d/|%2Fdp%2F|%2Fgp%2Fproduct%2F)([A-Z0-9]{10})', real_url, re.IGNORECASE)
-                final_link = real_url
                 
                 if asin_match:
                     asin = asin_match.group(1).upper()
                     domain_match = re.search(r'amazon\.[a-z\.]+', real_url, re.IGNORECASE)
                     domain = domain_match.group(0).lower() if domain_match else "amazon.in"
                     final_link = f"https://www.{domain}/dp/{asin}?tag={AFFILIATE_TAG}"
+                else:
+                    # THE FIX: If it is a Store, Category, or Deal Page (No ASIN)
+                    if re.search(r'amazon\.', real_url, re.IGNORECASE):
+                        # Safely split off the hash fragment if one exists
+                        parts = real_url.split('#', 1)
+                        base_url = parts[0]
+                        hash_part = f"#{parts[1]}" if len(parts) > 1 else ""
+                        
+                        # Scrub existing affiliate tags
+                        clean_url = re.sub(r'([?&])tag=[^&]+', r'\1', base_url)
+                        clean_url = clean_url.replace('&&', '&').replace('?&', '?').rstrip('?&')
+                        
+                        # Apply your custom tag
+                        if '?' in clean_url:
+                            final_link = f"{clean_url}&tag={AFFILIATE_TAG}{hash_part}"
+                        else:
+                            final_link = f"{clean_url}?tag={AFFILIATE_TAG}{hash_part}"
+                    else:
+                        final_link = real_url
                 
                 formatted_deal = format_single_deal(current_block, final_link)
                 if formatted_deal:
@@ -203,24 +219,15 @@ async def process_new_message(client, message):
             print("❌ Could not detect valid product details or ASINs.")
             return
 
-        # ==========================================
-        # 4. POST-BLACKLIST CHECK
-        # ==========================================
         is_blocked, blocked_word = check_blacklist(final_output, conn)
         if is_blocked:
             print(f"🚫 BLOCKED POST-CONVERSION: Contains '{blocked_word}'")
             return
 
-        # ==========================================
-        # 5. THE HUMAN DELAY (Anti-Ban)
-        # ==========================================
         delay = random.randint(2, 5)
-        print(f"⏱️ HUMAN DELAY: Waiting {delay} seconds before posting to avoid Telegram spam filters...")
+        print(f"⏱️ HUMAN DELAY: Waiting {delay} seconds before posting...")
         await asyncio.sleep(delay)
 
-        # ==========================================
-        # 6. SEND TO TARGET(S)
-        # ==========================================
         for t_name in target_names:
             try:
                 print(f"➡️ Forwarding to Target: {t_name}")
