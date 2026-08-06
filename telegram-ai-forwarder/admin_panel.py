@@ -7,18 +7,21 @@ ADMIN_USER_ID = int(os.environ.get("ADMIN_USER_ID", 0))
 
 def register_admin_handlers(client):
     
+    # 🔒 SECURITY LOCK: Only listen to commands inside your own "Saved Messages"
+    def in_saved_messages(event):
+        return event.chat_id == ADMIN_USER_ID and event.sender_id == ADMIN_USER_ID
+
     @client.on(events.NewMessage(pattern=r'^/admin'))
     async def admin_start(event):
-        if event.sender_id != ADMIN_USER_ID:
-            return
+        if not in_saved_messages(event): return
         status = "🔴 PAUSED" if is_paused() else "🟢 ACTIVE"
         
         help_text = f"""⚙️ **ADMIN PANEL**
 Status: {status}
 
 **📡 Channels**
-`/addsource @username` (or Reply to a forwarded message with `/addsource`)
-`/addtarget @username`
+**Source:** Forward any message into this Saved Messages chat to Auto-Add it!
+`/addtarget @username` (Still works the old way!)
 
 **🔀 Routing**
 `/addroute @source -> @target`
@@ -38,81 +41,60 @@ Status: {status}
 
     @client.on(events.NewMessage(pattern=r'^/pause'))
     async def pause_bot(event):
-        if event.sender_id != ADMIN_USER_ID: return
+        if not in_saved_messages(event): return
         set_paused(True)
         await event.reply("🔴 Forwarding is now PAUSED.")
 
     @client.on(events.NewMessage(pattern=r'^/resume'))
     async def resume_bot(event):
-        if event.sender_id != ADMIN_USER_ID: return
+        if not in_saved_messages(event): return
         set_paused(False)
         await event.reply("🟢 Forwarding is now ACTIVE.")
 
-    # ==========================================
-    # UPGRADED: Smart /addsource handler
-    # ==========================================
     @client.on(events.NewMessage(pattern=r'^/addsource\s*(.*)'))
     async def cmd_add_source(event):
-        if event.sender_id != ADMIN_USER_ID: return
-        
+        # Keep the old command just in case you ever need to manually type an ID
+        if not in_saved_messages(event): return
         target = event.pattern_match.group(1).strip()
         
-        # Scenario 1: Admin replied to a forwarded message with /addsource
-        if event.is_reply:
-            reply_msg = await event.get_reply_message()
-            if reply_msg.forward:
-                if reply_msg.forward.chat:
-                    chat_id = reply_msg.forward.chat.id
-                    title = getattr(reply_msg.forward.chat, 'title', str(chat_id))
-                    target = str(chat_id)
-                    add_source(chat_id, target)
-                    await event.reply(f"✅ Auto-Added Private Source: **{title}** (`{chat_id}`)")
-                    return
-                elif reply_msg.forward.sender_id:
-                    sender_id = reply_msg.forward.sender_id
-                    target = str(sender_id)
-                    add_source(sender_id, target)
-                    await event.reply(f"✅ Auto-Added Private User/Bot Source: `{sender_id}`")
-                    return
-        
-        # Scenario 2: Standard text command (/addsource @username or /addsource -100...)
         if not target:
-            await event.reply("❌ Please provide a @username, an ID, or reply to a forwarded message with `/addsource`.")
+            await event.reply("❌ Provide an ID or @username.")
             return
 
         try:
-            # If the admin manually typed a numeric ID (like -100123456)
             if target.lstrip('-').isdigit():
                 chat_id = int(target)
                 add_source(chat_id, target)
                 await event.reply(f"✅ Source ID `{chat_id}` added successfully.")
             else:
-                # If the admin typed a @username
                 entity = await client.get_entity(target)
                 add_source(entity.id, target)
                 await event.reply(f"✅ Source {target} added successfully.")
         except Exception as e:
-            await event.reply(f"❌ Error: {str(e)}\nMake sure your account is a member of that channel.")
+            await event.reply(f"❌ Error: {str(e)}")
 
     # ==========================================
-    # NEW: Forward ID Detector (Auto-Responder)
+    # 🔥 AUTO-ADD SOURCE WHEN FORWARDED
     # ==========================================
     @client.on(events.NewMessage())
     async def forward_detector(event):
-        if event.sender_id != ADMIN_USER_ID: return
+        if not in_saved_messages(event): return
         if not event.forward: return
         
+        # If you forward a message into Saved Messages, Auto-Add it as a source!
         if event.forward.chat:
             chat_id = event.forward.chat.id
             title = getattr(event.forward.chat, 'title', 'Unknown Group')
-            await event.reply(f"📡 **Source ID Detected!**\nName: {title}\nID: `{chat_id}`\n\nTo add this group as a source, just reply to the message you just sent with `/addsource`, or copy this command:\n`/addsource {chat_id}`")
+            add_source(chat_id, str(chat_id))
+            await event.reply(f"✅ **Source Auto-Added!**\nName: {title}\nID: `{chat_id}`\n\n(It is now saved in your database automatically!)")
         elif event.forward.sender_id:
             sender_id = event.forward.sender_id
-            await event.reply(f"👤 **User/Bot ID Detected!**\nID: `{sender_id}`\n\nTo add this user as a source, copy this command:\n`/addsource {sender_id}`")
+            add_source(sender_id, str(sender_id))
+            await event.reply(f"✅ **User/Bot Source Auto-Added!**\nID: `{sender_id}`")
 
     @client.on(events.NewMessage(pattern=r'^/addtarget\s+(.+)'))
     async def cmd_add_target(event):
-        if event.sender_id != ADMIN_USER_ID: return
+        if not in_saved_messages(event): return
         target = event.pattern_match.group(1).strip()
         try:
             entity = await client.get_entity(target)
@@ -123,7 +105,7 @@ Status: {status}
 
     @client.on(events.NewMessage(pattern=r'^/addroute\s+(.+)'))
     async def cmd_add_route(event):
-        if event.sender_id != ADMIN_USER_ID: return
+        if not in_saved_messages(event): return
         text = event.pattern_match.group(1).strip()
         if "->" not in text:
             await event.reply("❌ Wrong format. Use: `/addroute @source -> @target`")
@@ -134,28 +116,28 @@ Status: {status}
 
     @client.on(events.NewMessage(pattern=r'^/addword\s+(.+)'))
     async def cmd_add_word(event):
-        if event.sender_id != ADMIN_USER_ID: return
+        if not in_saved_messages(event): return
         word = event.pattern_match.group(1).strip()
         add_filter('word', word)
         await event.reply(f"✅ Blacklisted word added: {word}")
 
     @client.on(events.NewMessage(pattern=r'^/addlink\s+(.+)'))
     async def cmd_add_link(event):
-        if event.sender_id != ADMIN_USER_ID: return
+        if not in_saved_messages(event): return
         link = event.pattern_match.group(1).strip()
         add_filter('link', link)
         await event.reply(f"✅ Blocked link added: {link}")
 
     @client.on(events.NewMessage(pattern=r'^/adddomain\s+(.+)'))
     async def cmd_add_domain(event):
-        if event.sender_id != ADMIN_USER_ID: return
+        if not in_saved_messages(event): return
         dom = event.pattern_match.group(1).strip()
         add_filter('domain', dom)
         await event.reply(f"✅ Blocked domain added: {dom}")
 
     @client.on(events.NewMessage(pattern=r'^/stats'))
     async def cmd_stats(event):
-        if event.sender_id != ADMIN_USER_ID: return
+        if not in_saved_messages(event): return
         conn = get_db()
         today = datetime.datetime.now().strftime("%Y-%m-%d")
         stats = conn.execute("SELECT * FROM statistics WHERE date=?", (today,)).fetchone()
@@ -169,7 +151,7 @@ Status: {status}
 
     @client.on(events.NewMessage(pattern=r'^/status'))
     async def cmd_status(event):
-        if event.sender_id != ADMIN_USER_ID: return
+        if not in_saved_messages(event): return
         conn = get_db()
         src_c = conn.execute("SELECT COUNT(*) FROM sources").fetchone()[0]
         tgt_c = conn.execute("SELECT COUNT(*) FROM targets").fetchone()[0]
