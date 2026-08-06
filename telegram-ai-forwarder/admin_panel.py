@@ -3,13 +3,16 @@ import datetime
 from telethon import events
 from bot.database import get_db, is_paused, set_paused, add_source, add_target, add_route, add_filter
 
-ADMIN_USER_ID = int(os.environ.get("ADMIN_USER_ID", 0))
+# THE FIX: Split the Environment Variable by commas to support multiple Admins!
+admin_env = os.environ.get("ADMIN_USER_ID", "0")
+ADMIN_USER_IDS = [int(x.strip()) for x in admin_env.split(',') if x.strip().isdigit()]
 
 def register_admin_handlers(client):
     
-    # 🔒 SECURITY LOCK: Only listen to commands inside your own "Saved Messages"
+    # 🔒 SECURITY LOCK: Only listen if the sender is in the Admin list, 
+    # and the message is in their Saved Messages (or a direct message to the bot account).
     def in_saved_messages(event):
-        return event.chat_id == ADMIN_USER_ID and event.sender_id == ADMIN_USER_ID
+        return event.chat_id in ADMIN_USER_IDS and event.sender_id in ADMIN_USER_IDS
 
     @client.on(events.NewMessage(pattern=r'^/admin'))
     async def admin_start(event):
@@ -20,7 +23,7 @@ def register_admin_handlers(client):
 Status: {status}
 
 **📡 Channels**
-**Source:** Forward any message into this Saved Messages chat to Auto-Add it!
+**Source:** Forward any message here to Auto-Add it!
 `/addtarget @username` (Still works the old way!)
 
 **🔀 Routing**
@@ -53,7 +56,6 @@ Status: {status}
 
     @client.on(events.NewMessage(pattern=r'^/addsource\s*(.*)'))
     async def cmd_add_source(event):
-        # Keep the old command just in case you ever need to manually type an ID
         if not in_saved_messages(event): return
         target = event.pattern_match.group(1).strip()
         
@@ -81,7 +83,6 @@ Status: {status}
         if not in_saved_messages(event): return
         if not event.forward: return
         
-        # If you forward a message into Saved Messages, Auto-Add it as a source!
         if event.forward.chat:
             chat_id = event.forward.chat.id
             title = getattr(event.forward.chat, 'title', 'Unknown Group')
