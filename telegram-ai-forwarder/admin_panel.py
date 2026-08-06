@@ -17,7 +17,7 @@ def register_admin_handlers(client):
 Status: {status}
 
 **📡 Channels**
-`/addsource @username`
+`/addsource @username` (or Reply to a forwarded message with `/addsource`)
 `/addtarget @username`
 
 **🔀 Routing**
@@ -48,16 +48,67 @@ Status: {status}
         set_paused(False)
         await event.reply("🟢 Forwarding is now ACTIVE.")
 
-    @client.on(events.NewMessage(pattern=r'^/addsource\s+(.+)'))
+    # ==========================================
+    # UPGRADED: Smart /addsource handler
+    # ==========================================
+    @client.on(events.NewMessage(pattern=r'^/addsource\s*(.*)'))
     async def cmd_add_source(event):
         if event.sender_id != ADMIN_USER_ID: return
+        
         target = event.pattern_match.group(1).strip()
+        
+        # Scenario 1: Admin replied to a forwarded message with /addsource
+        if event.is_reply:
+            reply_msg = await event.get_reply_message()
+            if reply_msg.forward:
+                if reply_msg.forward.chat:
+                    chat_id = reply_msg.forward.chat.id
+                    title = getattr(reply_msg.forward.chat, 'title', str(chat_id))
+                    target = str(chat_id)
+                    add_source(chat_id, target)
+                    await event.reply(f"✅ Auto-Added Private Source: **{title}** (`{chat_id}`)")
+                    return
+                elif reply_msg.forward.sender_id:
+                    sender_id = reply_msg.forward.sender_id
+                    target = str(sender_id)
+                    add_source(sender_id, target)
+                    await event.reply(f"✅ Auto-Added Private User/Bot Source: `{sender_id}`")
+                    return
+        
+        # Scenario 2: Standard text command (/addsource @username or /addsource -100...)
+        if not target:
+            await event.reply("❌ Please provide a @username, an ID, or reply to a forwarded message with `/addsource`.")
+            return
+
         try:
-            entity = await client.get_entity(target)
-            add_source(entity.id, target)
-            await event.reply(f"✅ Source {target} added successfully.")
+            # If the admin manually typed a numeric ID (like -100123456)
+            if target.lstrip('-').isdigit():
+                chat_id = int(target)
+                add_source(chat_id, target)
+                await event.reply(f"✅ Source ID `{chat_id}` added successfully.")
+            else:
+                # If the admin typed a @username
+                entity = await client.get_entity(target)
+                add_source(entity.id, target)
+                await event.reply(f"✅ Source {target} added successfully.")
         except Exception as e:
             await event.reply(f"❌ Error: {str(e)}\nMake sure your account is a member of that channel.")
+
+    # ==========================================
+    # NEW: Forward ID Detector (Auto-Responder)
+    # ==========================================
+    @client.on(events.NewMessage())
+    async def forward_detector(event):
+        if event.sender_id != ADMIN_USER_ID: return
+        if not event.forward: return
+        
+        if event.forward.chat:
+            chat_id = event.forward.chat.id
+            title = getattr(event.forward.chat, 'title', 'Unknown Group')
+            await event.reply(f"📡 **Source ID Detected!**\nName: {title}\nID: `{chat_id}`\n\nTo add this group as a source, just reply to the message you just sent with `/addsource`, or copy this command:\n`/addsource {chat_id}`")
+        elif event.forward.sender_id:
+            sender_id = event.forward.sender_id
+            await event.reply(f"👤 **User/Bot ID Detected!**\nID: `{sender_id}`\n\nTo add this user as a source, copy this command:\n`/addsource {sender_id}`")
 
     @client.on(events.NewMessage(pattern=r'^/addtarget\s+(.+)'))
     async def cmd_add_target(event):
