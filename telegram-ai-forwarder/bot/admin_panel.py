@@ -1,47 +1,27 @@
 import os
-import re
 import datetime
 from telethon import events
 from bot.database import get_db, is_paused, set_paused, add_source, add_target, add_route, add_filter
 
-# ==========================================
-# 👑 BULLETPROOF ADMIN ID PARSER
-# ==========================================
-raw_admin_ids = str(os.environ.get("ADMIN_USER_ID", "0"))
-# Extracts ONLY the numbers, completely ignoring accidental quotes, spaces, or brackets!
-ADMIN_USER_IDS = [int(x) for x in re.findall(r'\d+', raw_admin_ids)]
-
-print(f"\n👑 ADMIN SYSTEM ACTIVE | Authorized IDs: {ADMIN_USER_IDS}\n")
-
-def is_admin(sender_id):
-    if not sender_id:
-        return False
-    return sender_id in ADMIN_USER_IDS
+ADMIN_USER_ID = int(os.environ.get("ADMIN_USER_ID", 0))
 
 def register_admin_handlers(client):
     
-    # 🛠️ TRACKER: Logs every command attempt (Python 3.12 Safe Regex)
-    @client.on(events.NewMessage(pattern=r'(?i)^/(admin|status|stats|addsource|addtarget|addroute|addword|addlink|adddomain|pause|resume)', incoming=True, outgoing=True))
-    async def command_tracker(event):
-        sender = event.sender_id
-        print(f"\n--- 🛠️ COMMAND DETECTED: {event.raw_text} ---")
-        print(f"👤 Sender ID: {sender}")
-        if not is_admin(sender):
-            print(f"❌ ACCESS DENIED: {sender} is not in the Admin List.")
-        else:
-            print(f"✅ ACCESS GRANTED: Executing command...")
+    # 🔒 SECURITY LOCK: Only listen to commands inside your own "Saved Messages"
+    def in_saved_messages(event):
+        return event.chat_id == ADMIN_USER_ID and event.sender_id == ADMIN_USER_ID
 
-    @client.on(events.NewMessage(pattern=r'(?i)^/admin', incoming=True, outgoing=True))
+    @client.on(events.NewMessage(pattern=r'^/admin'))
     async def admin_start(event):
-        if not is_admin(event.sender_id): return
+        if not in_saved_messages(event): return
         status = "🔴 PAUSED" if is_paused() else "🟢 ACTIVE"
         
         help_text = f"""⚙️ **ADMIN PANEL**
 Status: {status}
 
 **📡 Channels**
-`/addsource @username`
-`/addtarget @username`
+**Source:** Forward any message into this Saved Messages chat to Auto-Add it!
+`/addtarget @username` (Still works the old way!)
 
 **🔀 Routing**
 `/addroute @source -> @target`
@@ -52,50 +32,80 @@ Status: {status}
 `/adddomain badsite.com`
 
 **⚙️ Controls**
-`/pause` (Stops forwarding)
-`/resume` (Starts forwarding)
+`/pause` (Stops all forwarding)
+`/resume` (Starts forwarding again)
 `/stats` (See today's numbers)
 `/status` (System info)
 """
         await event.reply(help_text)
 
-    @client.on(events.NewMessage(pattern=r'(?i)^/pause', incoming=True, outgoing=True))
+    @client.on(events.NewMessage(pattern=r'^/pause'))
     async def pause_bot(event):
-        if not is_admin(event.sender_id): return
+        if not in_saved_messages(event): return
         set_paused(True)
         await event.reply("🔴 Forwarding is now PAUSED.")
 
-    @client.on(events.NewMessage(pattern=r'(?i)^/resume', incoming=True, outgoing=True))
+    @client.on(events.NewMessage(pattern=r'^/resume'))
     async def resume_bot(event):
-        if not is_admin(event.sender_id): return
+        if not in_saved_messages(event): return
         set_paused(False)
         await event.reply("🟢 Forwarding is now ACTIVE.")
 
-    @client.on(events.NewMessage(pattern=r'(?i)^/addsource\s+(.+)', incoming=True, outgoing=True))
+    @client.on(events.NewMessage(pattern=r'^/addsource\s*(.*)'))
     async def cmd_add_source(event):
-        if not is_admin(event.sender_id): return
+        # Keep the old command just in case you ever need to manually type an ID
+        if not in_saved_messages(event): return
         target = event.pattern_match.group(1).strip()
-        try:
-            entity = await client.get_entity(target)
-            add_source(entity.id, target)
-            await event.reply(f"✅ Source {target} added successfully.")
-        except Exception as e:
-            await event.reply(f"❌ Error: {str(e)}\nMake sure your account is a member of that channel.")
+        
+        if not target:
+            await event.reply("❌ Provide an ID or @username.")
+            return
 
-    @client.on(events.NewMessage(pattern=r'(?i)^/addtarget\s+(.+)', incoming=True, outgoing=True))
+        try:
+            if target.lstrip('-').isdigit():
+                chat_id = int(target)
+                add_source(chat_id, target)
+                await event.reply(f"✅ Source ID `{chat_id}` added successfully.")
+            else:
+                entity = await client.get_entity(target)
+                add_source(entity.id, target)
+                await event.reply(f"✅ Source {target} added successfully.")
+        except Exception as e:
+            await event.reply(f"❌ Error: {str(e)}")
+
+    # ==========================================
+    # 🔥 AUTO-ADD SOURCE WHEN FORWARDED
+    # ==========================================
+    @client.on(events.NewMessage())
+    async def forward_detector(event):
+        if not in_saved_messages(event): return
+        if not event.forward: return
+        
+        # If you forward a message into Saved Messages, Auto-Add it as a source!
+        if event.forward.chat:
+            chat_id = event.forward.chat.id
+            title = getattr(event.forward.chat, 'title', 'Unknown Group')
+            add_source(chat_id, str(chat_id))
+            await event.reply(f"✅ **Source Auto-Added!**\nName: {title}\nID: `{chat_id}`\n\n(It is now saved in your database automatically!)")
+        elif event.forward.sender_id:
+            sender_id = event.forward.sender_id
+            add_source(sender_id, str(sender_id))
+            await event.reply(f"✅ **User/Bot Source Auto-Added!**\nID: `{sender_id}`")
+
+    @client.on(events.NewMessage(pattern=r'^/addtarget\s+(.+)'))
     async def cmd_add_target(event):
-        if not is_admin(event.sender_id): return
+        if not in_saved_messages(event): return
         target = event.pattern_match.group(1).strip()
         try:
             entity = await client.get_entity(target)
             add_target(entity.id, target)
             await event.reply(f"✅ Target {target} added successfully.")
         except Exception as e:
-            await event.reply(f"❌ Error: {str(e)}\nMake sure you have rights to post there.")
+            await event.reply(f"❌ Error: {str(e)}\nMake sure you have admin rights to post there.")
 
-    @client.on(events.NewMessage(pattern=r'(?i)^/addroute\s+(.+)', incoming=True, outgoing=True))
+    @client.on(events.NewMessage(pattern=r'^/addroute\s+(.+)'))
     async def cmd_add_route(event):
-        if not is_admin(event.sender_id): return
+        if not in_saved_messages(event): return
         text = event.pattern_match.group(1).strip()
         if "->" not in text:
             await event.reply("❌ Wrong format. Use: `/addroute @source -> @target`")
@@ -104,30 +114,30 @@ Status: {status}
         add_route(src, tgt)
         await event.reply(f"✅ Route created: {src} -> {tgt}")
 
-    @client.on(events.NewMessage(pattern=r'(?i)^/addword\s+(.+)', incoming=True, outgoing=True))
+    @client.on(events.NewMessage(pattern=r'^/addword\s+(.+)'))
     async def cmd_add_word(event):
-        if not is_admin(event.sender_id): return
+        if not in_saved_messages(event): return
         word = event.pattern_match.group(1).strip()
         add_filter('word', word)
         await event.reply(f"✅ Blacklisted word added: {word}")
 
-    @client.on(events.NewMessage(pattern=r'(?i)^/addlink\s+(.+)', incoming=True, outgoing=True))
+    @client.on(events.NewMessage(pattern=r'^/addlink\s+(.+)'))
     async def cmd_add_link(event):
-        if not is_admin(event.sender_id): return
+        if not in_saved_messages(event): return
         link = event.pattern_match.group(1).strip()
         add_filter('link', link)
         await event.reply(f"✅ Blocked link added: {link}")
 
-    @client.on(events.NewMessage(pattern=r'(?i)^/adddomain\s+(.+)', incoming=True, outgoing=True))
+    @client.on(events.NewMessage(pattern=r'^/adddomain\s+(.+)'))
     async def cmd_add_domain(event):
-        if not is_admin(event.sender_id): return
+        if not in_saved_messages(event): return
         dom = event.pattern_match.group(1).strip()
         add_filter('domain', dom)
         await event.reply(f"✅ Blocked domain added: {dom}")
 
-    @client.on(events.NewMessage(pattern=r'(?i)^/stats', incoming=True, outgoing=True))
+    @client.on(events.NewMessage(pattern=r'^/stats'))
     async def cmd_stats(event):
-        if not is_admin(event.sender_id): return
+        if not in_saved_messages(event): return
         conn = get_db()
         today = datetime.datetime.now().strftime("%Y-%m-%d")
         stats = conn.execute("SELECT * FROM statistics WHERE date=?", (today,)).fetchone()
@@ -139,9 +149,9 @@ Status: {status}
             text = "📊 No messages processed yet today."
         await event.reply(text)
 
-    @client.on(events.NewMessage(pattern=r'(?i)^/status', incoming=True, outgoing=True))
+    @client.on(events.NewMessage(pattern=r'^/status'))
     async def cmd_status(event):
-        if not is_admin(event.sender_id): return
+        if not in_saved_messages(event): return
         conn = get_db()
         src_c = conn.execute("SELECT COUNT(*) FROM sources").fetchone()[0]
         tgt_c = conn.execute("SELECT COUNT(*) FROM targets").fetchone()[0]
